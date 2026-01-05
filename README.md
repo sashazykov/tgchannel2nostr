@@ -10,21 +10,19 @@ Prerequisites:
 1. Telegram bot token
 1. Schnorr private key and public key
 
-Change the wrangler.toml file:
 
-```toml
-[vars]
-
-publicKey=YOUR_PUBLICK_KEY
-privateKey=YOUR_PRIVATE_KEY
-```
+Update `name` in wrangler.toml to your desired Cloudflare worker name.
 
 Type the following command inside the terminal:
 
 ```bash
 npm install
-wrangler publish
+wrangler deploy
+wrangler secret put publicKey
+wrangler secret put privateKey
 ```
+
+It will prompt you to enter the respective keys for your Nostr identity. The keys should be in hex format.
 
 Request the following link to setup webhook:
 ```
