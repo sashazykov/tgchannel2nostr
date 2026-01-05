@@ -3,6 +3,9 @@ import * as secp from '@noble/secp256k1';
 const regex = /#(.*?) /gm;
 
 function exactHashTag(content) {
+    if (typeof content !== "string") {
+        return [];
+    }
     const array = [...content.matchAll(regex)];
     return array.map(m => ["t", m[1]])
 }

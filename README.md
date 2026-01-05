@@ -20,9 +20,11 @@ npm install
 wrangler deploy
 wrangler secret put publicKey
 wrangler secret put privateKey
+wrangler secret put telegramBotToken
 ```
 
 It will prompt you to enter the respective keys for your Nostr identity. The keys should be in hex format.
+The Telegram bot token is used to fetch and proxy images so Nostr posts can include a public image URL.
 
 Request the following link to setup webhook:
 ```
