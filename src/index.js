@@ -47,6 +47,29 @@ async function buildPhotoUrl(photoArray, botToken, requestUrl) {
 	}
 }
 
+async function buildStickerUrl(sticker, botToken, requestUrl) {
+	if (!sticker || !sticker.file_id) {
+		return null;
+	}
+	if (!botToken) {
+		console.warn("Missing telegramBotToken, skipping sticker");
+		return null;
+	}
+	const isAnimated = sticker.is_animated || sticker.is_video;
+	const thumbId = sticker.thumbnail?.file_id ?? sticker.thumb?.file_id;
+	const fileId = isAnimated && thumbId ? thumbId : sticker.file_id;
+	const format = isAnimated && thumbId ? "png" : null;
+	try {
+		const filePath = await getTelegramFilePath(fileId, botToken);
+		const origin = new URL(requestUrl).origin;
+		const query = format ? `?format=${format}` : "";
+		return `${origin}/tg/file/${encodeURI(filePath)}${query}`;
+	} catch (err) {
+		console.warn("Failed to resolve Telegram sticker:", err);
+		return null;
+	}
+}
+
 export default {
 	async fetch(request, env, ctx) {
 
@@ -60,7 +83,17 @@ export default {
 				return new Response("Missing telegramBotToken", { status: 500 });
 			}
 			const tgUrl = `https://api.telegram.org/file/bot${env.telegramBotToken}/${filePath}`;
-			const tgResp = await fetch(tgUrl);
+			const format = url.searchParams.get("format");
+			let tgResp;
+			if (format === "png") {
+				tgResp = await fetch(tgUrl, { cf: { image: { format: "png" } } });
+				if (!tgResp.ok) {
+					console.warn("Image conversion failed, falling back:", tgResp.status);
+					tgResp = await fetch(tgUrl);
+				}
+			} else {
+				tgResp = await fetch(tgUrl);
+			}
 			const headers = new Headers(tgResp.headers);
 			headers.set("Cache-Control", "public, max-age=86400");
 			return new Response(tgResp.body, { status: tgResp.status, headers });
@@ -79,15 +112,22 @@ export default {
 
 		const channelPost = data["channel_post"]["text"] ?? data["channel_post"]["caption"] ?? "";
 		const photoUrl = await buildPhotoUrl(data["channel_post"]["photo"], env.telegramBotToken, request.url);
+		const stickerUrl = await buildStickerUrl(data["channel_post"]["sticker"], env.telegramBotToken, request.url);
 		const contentParts = [];
 		if (typeof channelPost === "string" && channelPost.length > 0) {
 			contentParts.push(channelPost);
 		}
+		if (stickerUrl && data["channel_post"]["sticker"]?.emoji && contentParts.length === 0) {
+			contentParts.push(data["channel_post"]["sticker"].emoji);
+		}
 		if (photoUrl) {
 			contentParts.push(photoUrl);
 		}
+		if (stickerUrl) {
+			contentParts.push(stickerUrl);
+		}
 		if (contentParts.length === 0) {
-			return new Response("No text, caption, or photo found");
+			return new Response("No text, caption, photo, or sticker found");
 		}
 		const content = contentParts.join("\n\n");
 		const nip01Event = await generateNip01Event(content, env.publicKey, env.privateKey);
