@@ -140,6 +140,50 @@ async function sendNostrContent(content, env) {
 	}
 }
 
+function buildTelegramMessageLink(channelPost) {
+	if (!channelPost) {
+		return null;
+	}
+	const messageId = channelPost.message_id;
+	const chat = channelPost.chat ?? channelPost.sender_chat;
+	const chatId = chat?.id;
+	if (!messageId || !chatId) {
+		return null;
+	}
+	if (chat?.username) {
+		return `https://t.me/${chat.username}/${messageId}`;
+	}
+	const idStr = String(chatId);
+	const stripped = idStr.startsWith("-100") ? idStr.slice(4) : idStr.replace("-", "");
+	if (!stripped) {
+		return null;
+	}
+	return `https://t.me/c/${stripped}/${messageId}`;
+}
+
+function buildPollContent(channelPost) {
+	const poll = channelPost?.poll;
+	if (!poll) {
+		return null;
+	}
+	const parts = [];
+	if (poll.question) {
+		parts.push(`Poll: ${poll.question}`);
+	}
+	if (Array.isArray(poll.options) && poll.options.length > 0) {
+		const optionLines = poll.options.map((option, index) => `${index + 1}. ${option.text}`);
+		parts.push(optionLines.join("\n"));
+	}
+	const link = buildTelegramMessageLink(channelPost);
+	if (link) {
+		parts.push(link);
+	}
+	if (parts.length === 0) {
+		return null;
+	}
+	return parts.join("\n\n");
+}
+
 async function flushMediaGroup(mediaGroupId, env) {
 	const group = mediaGroups.get(mediaGroupId);
 	if (!group) {
@@ -203,10 +247,12 @@ export default {
 			return new Response("No channel_post found");
 		}
 
-		const channelPost = data["channel_post"]["text"] ?? data["channel_post"]["caption"] ?? "";
-		const mediaUrls = await collectMediaUrls(data["channel_post"], env.telegramBotToken, request.url);
-		const stickerEmoji = data["channel_post"]["sticker"]?.emoji ?? "";
-		const mediaGroupId = data["channel_post"]["media_group_id"];
+		const channelPostData = data["channel_post"];
+		const channelPost = channelPostData["text"] ?? channelPostData["caption"] ?? "";
+		const mediaUrls = await collectMediaUrls(channelPostData, env.telegramBotToken, request.url);
+		const stickerEmoji = channelPostData["sticker"]?.emoji ?? "";
+		const mediaGroupId = channelPostData["media_group_id"];
+		const pollContent = buildPollContent(channelPostData);
 
 		if (mediaGroupId) {
 			const group = mediaGroups.get(mediaGroupId) ?? {
@@ -245,6 +291,9 @@ export default {
 		}
 		if (mediaUrls.length > 0) {
 			contentParts.push(...mediaUrls);
+		}
+		if (pollContent) {
+			contentParts.push(pollContent);
 		}
 		if (contentParts.length === 0) {
 			return new Response("No content found");
