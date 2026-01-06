@@ -10,6 +10,9 @@
 
 import { generateNip01Event, sendEvent } from './nostr';
 
+const MEDIA_GROUP_FLUSH_MS = 2000;
+const mediaGroups = new Map();
+
 async function getTelegramFilePath(fileId, botToken) {
 	if (!botToken) {
 		throw new Error("Missing telegramBotToken");
@@ -47,6 +50,24 @@ async function buildPhotoUrl(photoArray, botToken, requestUrl) {
 	}
 }
 
+async function buildFileUrl(file, botToken, requestUrl, label) {
+	if (!file || !file.file_id) {
+		return null;
+	}
+	if (!botToken) {
+		console.warn(`Missing telegramBotToken, skipping ${label}`);
+		return null;
+	}
+	try {
+		const filePath = await getTelegramFilePath(file.file_id, botToken);
+		const origin = new URL(requestUrl).origin;
+		return `${origin}/tg/file/${encodeURI(filePath)}`;
+	} catch (err) {
+		console.warn(`Failed to resolve Telegram ${label}:`, err);
+		return null;
+	}
+}
+
 async function buildStickerUrl(sticker, botToken, requestUrl) {
 	if (!sticker || !sticker.file_id) {
 		return null;
@@ -68,6 +89,78 @@ async function buildStickerUrl(sticker, botToken, requestUrl) {
 		console.warn("Failed to resolve Telegram sticker:", err);
 		return null;
 	}
+}
+
+async function collectMediaUrls(channelPost, botToken, requestUrl) {
+	const urls = [];
+	const photoUrl = await buildPhotoUrl(channelPost.photo, botToken, requestUrl);
+	if (photoUrl) {
+		urls.push(photoUrl);
+	}
+	const stickerUrl = await buildStickerUrl(channelPost.sticker, botToken, requestUrl);
+	if (stickerUrl) {
+		urls.push(stickerUrl);
+	}
+	const videoUrl = await buildFileUrl(channelPost.video, botToken, requestUrl, "video");
+	if (videoUrl) {
+		urls.push(videoUrl);
+	}
+	const animationUrl = await buildFileUrl(channelPost.animation, botToken, requestUrl, "animation");
+	if (animationUrl) {
+		urls.push(animationUrl);
+	}
+	const documentUrl = await buildFileUrl(channelPost.document, botToken, requestUrl, "document");
+	if (documentUrl) {
+		urls.push(documentUrl);
+	}
+	const audioUrl = await buildFileUrl(channelPost.audio, botToken, requestUrl, "audio");
+	if (audioUrl) {
+		urls.push(audioUrl);
+	}
+	const voiceUrl = await buildFileUrl(channelPost.voice, botToken, requestUrl, "voice");
+	if (voiceUrl) {
+		urls.push(voiceUrl);
+	}
+	const videoNoteUrl = await buildFileUrl(channelPost.video_note, botToken, requestUrl, "video_note");
+	if (videoNoteUrl) {
+		urls.push(videoNoteUrl);
+	}
+	return urls;
+}
+
+async function sendNostrContent(content, env) {
+	const nip01Event = await generateNip01Event(content, env.publicKey, env.privateKey);
+	const eventPayload = `["EVENT", ${nip01Event}]`;
+	console.log(eventPayload);
+	try {
+		const msg = await sendEvent(eventPayload);
+		console.log("Relay response:", msg);
+	} catch (err) {
+		console.warn("Nostr send failed:", err);
+	}
+}
+
+async function flushMediaGroup(mediaGroupId, env) {
+	const group = mediaGroups.get(mediaGroupId);
+	if (!group) {
+		return;
+	}
+	mediaGroups.delete(mediaGroupId);
+	const contentParts = [];
+	if (group.text) {
+		contentParts.push(group.text);
+	} else if (group.emoji) {
+		contentParts.push(group.emoji);
+	}
+	const urls = Array.from(group.urls);
+	if (urls.length > 0) {
+		contentParts.push(...urls);
+	}
+	if (contentParts.length === 0) {
+		return;
+	}
+	const content = contentParts.join("\n\n");
+	await sendNostrContent(content, env);
 }
 
 export default {
@@ -111,34 +204,53 @@ export default {
 		}
 
 		const channelPost = data["channel_post"]["text"] ?? data["channel_post"]["caption"] ?? "";
-		const photoUrl = await buildPhotoUrl(data["channel_post"]["photo"], env.telegramBotToken, request.url);
-		const stickerUrl = await buildStickerUrl(data["channel_post"]["sticker"], env.telegramBotToken, request.url);
+		const mediaUrls = await collectMediaUrls(data["channel_post"], env.telegramBotToken, request.url);
+		const stickerEmoji = data["channel_post"]["sticker"]?.emoji ?? "";
+		const mediaGroupId = data["channel_post"]["media_group_id"];
+
+		if (mediaGroupId) {
+			const group = mediaGroups.get(mediaGroupId) ?? {
+				text: "",
+				emoji: "",
+				urls: new Set(),
+				flushPromise: null,
+			};
+			if (typeof channelPost === "string" && channelPost.length > 0 && !group.text) {
+				group.text = channelPost;
+			}
+			if (stickerEmoji && !group.emoji) {
+				group.emoji = stickerEmoji;
+			}
+			for (const url of mediaUrls) {
+				group.urls.add(url);
+			}
+			if (!group.flushPromise) {
+				group.flushPromise = new Promise((resolve) => {
+					setTimeout(() => {
+						flushMediaGroup(mediaGroupId, env).finally(resolve);
+					}, MEDIA_GROUP_FLUSH_MS);
+				});
+			}
+			mediaGroups.set(mediaGroupId, group);
+			ctx.waitUntil(group.flushPromise);
+			return new Response("OK");
+		}
+
 		const contentParts = [];
 		if (typeof channelPost === "string" && channelPost.length > 0) {
 			contentParts.push(channelPost);
 		}
-		if (stickerUrl && data["channel_post"]["sticker"]?.emoji && contentParts.length === 0) {
-			contentParts.push(data["channel_post"]["sticker"].emoji);
+		if (stickerEmoji && contentParts.length === 0) {
+			contentParts.push(stickerEmoji);
 		}
-		if (photoUrl) {
-			contentParts.push(photoUrl);
-		}
-		if (stickerUrl) {
-			contentParts.push(stickerUrl);
+		if (mediaUrls.length > 0) {
+			contentParts.push(...mediaUrls);
 		}
 		if (contentParts.length === 0) {
-			return new Response("No text, caption, photo, or sticker found");
+			return new Response("No content found");
 		}
 		const content = contentParts.join("\n\n");
-		const nip01Event = await generateNip01Event(content, env.publicKey, env.privateKey);
-		const eventPayload = `["EVENT", ${nip01Event}]`;
-		console.log(eventPayload);
-		const sendPromise = sendEvent(eventPayload).then((msg) => {
-			console.log("Relay response:", msg);
-		});
-		ctx.waitUntil(sendPromise.catch((err) => {
-			console.warn("Nostr send failed:", err);
-		}));
+		ctx.waitUntil(sendNostrContent(content, env));
 		return new Response("OK");
 	}
 }
