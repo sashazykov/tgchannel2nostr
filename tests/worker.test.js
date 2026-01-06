@@ -117,6 +117,44 @@ describe('worker fetch', () => {
     );
   });
 
+  it('includes forwarded info in nostr content', async () => {
+    const ctx = createExecutionContext();
+    const env = {
+      telegramBotToken: 'token123',
+      publicKey: PUBLIC_KEY_HEX,
+      privateKey: PRIVATE_KEY_HEX,
+    };
+    const payload = {
+      channel_post: {
+        text: 'hello',
+        forward_from_chat: {
+          id: -1001234567890,
+          title: 'Source Channel',
+          username: 'source',
+          type: 'channel',
+        },
+        forward_from_message_id: 42,
+      },
+    };
+    const resp = await worker.fetch(
+      new Request('https://example.com/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+      env,
+      ctx
+    );
+
+    expect(await resp.text()).toBe('OK');
+    await Promise.all(ctx.tasks);
+    expect(nostr.generateNip01Event).toHaveBeenCalledWith(
+      'Forwarded from Source Channel (@source)\nhttps://t.me/source/42\n\nhello',
+      PUBLIC_KEY_HEX,
+      PRIVATE_KEY_HEX
+    );
+  });
+
   it('flushes media groups after the delay', async () => {
     vi.useFakeTimers();
     setFetchMock(async (input) => {

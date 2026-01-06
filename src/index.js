@@ -5,6 +5,7 @@ import {
 	collectTelegramMediaUrls,
 	createTelegramMediaGroupManager,
 	handleTelegramFileProxy,
+	buildTelegramForwardContent,
 } from './telegram';
 
 const telegramMediaGroups = createTelegramMediaGroupManager();
@@ -43,6 +44,7 @@ export default {
 
 		const channelPostData = data["channel_post"];
 		const channelPost = channelPostData["text"] ?? channelPostData["caption"] ?? "";
+		const forwardContent = buildTelegramForwardContent(channelPostData);
 		const mediaUrls = await collectTelegramMediaUrls(channelPostData, env.telegramBotToken, request.url);
 		const stickerEmoji = channelPostData["sticker"]?.emoji ?? "";
 		const mediaGroupId = channelPostData["media_group_id"];
@@ -54,6 +56,7 @@ export default {
 				text: channelPost,
 				emoji: stickerEmoji,
 				urls: mediaUrls,
+				forwardedText: forwardContent,
 				onFlush: (content) => sendNostrContent(content, env),
 			});
 			if (flushPromise) {
@@ -63,6 +66,9 @@ export default {
 		}
 
 		const contentParts = [];
+		if (forwardContent) {
+			contentParts.push(forwardContent);
+		}
 		if (typeof channelPost === "string" && channelPost.length > 0) {
 			contentParts.push(channelPost);
 		}

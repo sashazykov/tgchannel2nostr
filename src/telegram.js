@@ -115,12 +115,7 @@ export async function collectTelegramMediaUrls(channelPost, botToken, requestUrl
 	return urls;
 }
 
-function buildTelegramMessageLink(channelPost) {
-	if (!channelPost) {
-		return null;
-	}
-	const messageId = channelPost.message_id;
-	const chat = channelPost.chat ?? channelPost.sender_chat;
+function buildTelegramChatMessageLink(chat, messageId) {
 	const chatId = chat?.id;
 	if (!messageId || !chatId) {
 		return null;
@@ -134,6 +129,96 @@ function buildTelegramMessageLink(channelPost) {
 		return null;
 	}
 	return `https://t.me/c/${stripped}/${messageId}`;
+}
+
+function buildTelegramMessageLink(channelPost) {
+	if (!channelPost) {
+		return null;
+	}
+	const messageId = channelPost.message_id;
+	const chat = channelPost.chat ?? channelPost.sender_chat;
+	return buildTelegramChatMessageLink(chat, messageId);
+}
+
+function buildTelegramSourceLabel(source) {
+	if (!source) {
+		return null;
+	}
+	if (source.title) {
+		return source.username ? `${source.title} (@${source.username})` : source.title;
+	}
+	if (source.first_name || source.last_name) {
+		const nameParts = [source.first_name, source.last_name].filter(Boolean);
+		return nameParts.join(" ");
+	}
+	if (source.username) {
+		return `@${source.username}`;
+	}
+	return null;
+}
+
+function resolveForwardOrigin(channelPost) {
+	const origin = channelPost?.forward_origin;
+	if (!origin) {
+		return null;
+	}
+	if (origin.type === "channel") {
+		return {
+			label: buildTelegramSourceLabel(origin.chat),
+			chat: origin.chat,
+			messageId: origin.message_id,
+		};
+	}
+	if (origin.type === "chat") {
+		return {
+			label: buildTelegramSourceLabel(origin.sender_chat),
+			chat: origin.sender_chat,
+			messageId: null,
+		};
+	}
+	if (origin.type === "user") {
+		return {
+			label: buildTelegramSourceLabel(origin.sender_user),
+			chat: null,
+			messageId: null,
+		};
+	}
+	if (origin.type === "hidden_user") {
+		return {
+			label: origin.sender_user_name,
+			chat: null,
+			messageId: null,
+		};
+	}
+	return null;
+}
+
+export function buildTelegramForwardContent(channelPost) {
+	if (!channelPost) {
+		return null;
+	}
+	const origin = resolveForwardOrigin(channelPost);
+	let label = origin?.label ?? null;
+	let chat = origin?.chat ?? null;
+	let messageId = origin?.messageId ?? null;
+	if (!label) {
+		const forwardedChat = channelPost.forward_from_chat ?? null;
+		label = buildTelegramSourceLabel(forwardedChat);
+		chat = forwardedChat;
+		messageId = channelPost.forward_from_message_id ?? null;
+	}
+	if (!label && channelPost.forward_from) {
+		label = buildTelegramSourceLabel(channelPost.forward_from);
+	}
+	if (!label && channelPost.forward_sender_name) {
+		label = channelPost.forward_sender_name;
+	}
+	if (!label) {
+		return null;
+	}
+	const link = buildTelegramChatMessageLink(chat, messageId);
+	const linkText = link ? `\n${link}` : "";
+	return `Forwarded from ${label}${linkText}`;
 }
 
 export function buildTelegramPollContent(channelPost) {
@@ -169,6 +254,9 @@ export function createTelegramMediaGroupManager({ flushDelayMs = MEDIA_GROUP_FLU
 		}
 		mediaGroups.delete(mediaGroupId);
 		const contentParts = [];
+		if (group.forwardedText) {
+			contentParts.push(group.forwardedText);
+		}
 		if (group.text) {
 			contentParts.push(group.text);
 		} else if (group.emoji) {
@@ -187,17 +275,21 @@ export function createTelegramMediaGroupManager({ flushDelayMs = MEDIA_GROUP_FLU
 		}
 	}
 
-	function enqueueMediaGroup({ mediaGroupId, text, emoji, urls, onFlush }) {
+	function enqueueMediaGroup({ mediaGroupId, text, emoji, urls, forwardedText, onFlush }) {
 		if (!mediaGroupId) {
 			return null;
 		}
 		const group = mediaGroups.get(mediaGroupId) ?? {
 			text: "",
 			emoji: "",
+			forwardedText: "",
 			urls: new Set(),
 			flushPromise: null,
 			onFlush: null,
 		};
+		if (typeof forwardedText === "string" && forwardedText.length > 0 && !group.forwardedText) {
+			group.forwardedText = forwardedText;
+		}
 		if (typeof text === "string" && text.length > 0 && !group.text) {
 			group.text = text;
 		}
