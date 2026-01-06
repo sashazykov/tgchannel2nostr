@@ -23,7 +23,7 @@ wrangler secret put privateKey
 wrangler secret put telegramBotToken
 ```
 
-It will prompt you to enter the respective keys for your Nostr identity. The keys should be in hex format.
+It will prompt you to enter the respective keys for your Nostr identity. The keys can be hex or bech32 (npub/nsec).
 The Telegram bot token is used to fetch and proxy images so Nostr posts can include a public image URL.
 
 Request the following link to setup webhook:

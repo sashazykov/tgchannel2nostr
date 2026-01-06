@@ -11,6 +11,8 @@ import worker from '../src/index.js';
 import * as nostr from '../src/nostr.js';
 
 const originalFetch = globalThis.fetch;
+const PUBLIC_KEY_HEX = 'a'.repeat(64);
+const PRIVATE_KEY_HEX = 'b'.repeat(64);
 
 function createExecutionContext() {
   const tasks = [];
@@ -87,8 +89,8 @@ describe('worker fetch', () => {
     const ctx = createExecutionContext();
     const env = {
       telegramBotToken: 'token123',
-      publicKey: 'pub',
-      privateKey: 'priv',
+      publicKey: PUBLIC_KEY_HEX,
+      privateKey: PRIVATE_KEY_HEX,
     };
     const payload = {
       channel_post: {
@@ -110,8 +112,8 @@ describe('worker fetch', () => {
     await Promise.all(ctx.tasks);
     expect(nostr.generateNip01Event).toHaveBeenCalledWith(
       'hello\n\nhttps://example.com/tg/file/photos/2.jpg',
-      'pub',
-      'priv'
+      PUBLIC_KEY_HEX,
+      PRIVATE_KEY_HEX
     );
   });
 
@@ -132,8 +134,8 @@ describe('worker fetch', () => {
     const ctx = createExecutionContext();
     const env = {
       telegramBotToken: 'token123',
-      publicKey: 'pub',
-      privateKey: 'priv',
+      publicKey: PUBLIC_KEY_HEX,
+      privateKey: PRIVATE_KEY_HEX,
     };
 
     await worker.fetch(

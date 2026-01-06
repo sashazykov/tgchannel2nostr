@@ -1,4 +1,5 @@
 import { generateNip01Event, sendEvent } from './nostr';
+import { normalizeNostrKey } from './key-converter';
 import {
 	buildTelegramPollContent,
 	collectTelegramMediaUrls,
@@ -9,7 +10,9 @@ import {
 const telegramMediaGroups = createTelegramMediaGroupManager();
 
 async function sendNostrContent(content, env) {
-	const nip01Event = await generateNip01Event(content, env.publicKey, env.privateKey);
+	const publicKey = normalizeNostrKey(env.publicKey, "npub");
+	const privateKey = normalizeNostrKey(env.privateKey, "nsec");
+	const nip01Event = await generateNip01Event(content, publicKey, privateKey);
 	const eventPayload = `["EVENT", ${nip01Event}]`;
 	console.log(eventPayload);
 	try {
