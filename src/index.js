@@ -4,7 +4,6 @@ import {
 	buildTelegramPollContent,
 	collectTelegramMediaUrls,
 	createTelegramMediaGroupManager,
-	handleTelegramFileProxy,
 	buildTelegramForwardContent,
 } from './telegram';
 
@@ -26,11 +25,6 @@ async function sendNostrContent(content, env) {
 
 export default {
 	async fetch(request, env, ctx) {
-		const telegramFileResponse = await handleTelegramFileProxy(request, env);
-		if (telegramFileResponse) {
-			return telegramFileResponse;
-		}
-
 		if (request.method !== "POST") {
 			return new Response("Error");
 		}
@@ -45,7 +39,7 @@ export default {
 		const channelPostData = data["channel_post"];
 		const channelPost = channelPostData["text"] ?? channelPostData["caption"] ?? "";
 		const forwardContent = buildTelegramForwardContent(channelPostData);
-		const mediaUrls = await collectTelegramMediaUrls(channelPostData, env.telegramBotToken, request.url);
+		const mediaUrls = await collectTelegramMediaUrls(channelPostData, env.telegramBotToken, request.url, env);
 		const stickerEmoji = channelPostData["sticker"]?.emoji ?? "";
 		const mediaGroupId = channelPostData["media_group_id"];
 		const pollContent = buildTelegramPollContent(channelPostData);

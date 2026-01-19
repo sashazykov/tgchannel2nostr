@@ -15,7 +15,116 @@ async function getTelegramFilePath(fileId, botToken) {
 	return payload.result.file_path;
 }
 
-async function buildPhotoUrl(photoArray, botToken, requestUrl) {
+function extractTelegramFileName(filePath) {
+	if (!filePath) {
+		return null;
+	}
+	const parts = filePath.split("/").filter(Boolean);
+	if (parts.length === 0) {
+		return null;
+	}
+	return parts[parts.length - 1] ?? null;
+}
+
+function inferFileExtension(filename) {
+	if (!filename) {
+		return null;
+	}
+	const lastDot = filename.lastIndexOf(".");
+	if (lastDot <= 0 || lastDot === filename.length - 1) {
+		return null;
+	}
+	return filename.slice(lastDot + 1).toLowerCase();
+}
+
+function formatTimestamp(date = new Date()) {
+	const pad = (value) => String(value).padStart(2, "0");
+	const year = date.getUTCFullYear();
+	const month = pad(date.getUTCMonth() + 1);
+	const day = pad(date.getUTCDate());
+	const hours = pad(date.getUTCHours());
+	const minutes = pad(date.getUTCMinutes());
+	const seconds = pad(date.getUTCSeconds());
+	return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+function generateTimestampId(counter, date = new Date()) {
+	const base = formatTimestamp(date);
+	const suffix = counter > 0 ? `-${String(counter).padStart(2, "0")}` : "";
+	return `${base}${suffix}`;
+}
+
+function buildR2PublicUrl({ baseUrl, objectKey }) {
+	if (!baseUrl || !objectKey) {
+		return null;
+	}
+	return `${baseUrl.replace(/\/$/, "")}/${objectKey}`;
+}
+
+let uploadCounter = 0;
+let uploadCounterSecond = null;
+
+function nextUploadCounter(date) {
+	const secondKey = date.toISOString().slice(0, 19);
+	if (uploadCounterSecond !== secondKey) {
+		uploadCounterSecond = secondKey;
+		uploadCounter = 0;
+	}
+	const current = uploadCounter;
+	uploadCounter += 1;
+	return current;
+}
+
+async function uploadTelegramFile({ fileId, botToken, bucket, format, label }) {
+	console.log("Uploading Telegram media to R2", { fileId, label: label ?? "media" });
+	const date = new Date();
+	const counter = nextUploadCounter(date);
+	const filePath = await getTelegramFilePath(fileId, botToken);
+	const filename = extractTelegramFileName(filePath);
+	let extension = inferFileExtension(filename);
+	if (format === "png") {
+		extension = "png";
+	}
+	const idBase = generateTimestampId(counter, date);
+	const objectKey = extension ? `${idBase}.${extension}` : idBase;
+	const tgUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+	let tgResp;
+	if (format === "png") {
+		tgResp = await fetch(tgUrl, { cf: { image: { format: "png" } } });
+		if (!tgResp.ok) {
+			console.warn("Image conversion failed, falling back:", tgResp.status);
+			tgResp = await fetch(tgUrl);
+		}
+	} else {
+		tgResp = await fetch(tgUrl);
+	}
+	if (!tgResp.ok) {
+		throw new Error(`Telegram download failed: ${tgResp.status}`);
+	}
+	const contentType = tgResp.headers.get("Content-Type") ?? undefined;
+	const cacheControl = tgResp.headers.get("Cache-Control") ?? "public, max-age=31536000, immutable";
+	const httpMetadata = contentType ? { contentType, cacheControl } : { cacheControl };
+	await bucket.put(objectKey, tgResp.body, {
+		httpMetadata,
+	});
+	console.log("Uploaded Telegram media to R2", { fileId, objectKey });
+	return { objectKey, filename, extension, contentType };
+}
+
+async function buildMediaUrl({ fileId, botToken, bucket, baseUrl, format, label }) {
+	if (!fileId) {
+		return null;
+	}
+	try {
+		const result = await uploadTelegramFile({ fileId, botToken, bucket, format, label });
+		return buildR2PublicUrl({ baseUrl, objectKey: result.objectKey });
+	} catch (err) {
+		console.warn("Failed to upload Telegram media:", err);
+		return null;
+	}
+}
+
+async function buildPhotoUrl(photoArray, botToken, requestUrl, bucket, baseUrl) {
 	if (!Array.isArray(photoArray) || photoArray.length === 0) {
 		return null;
 	}
@@ -27,17 +136,10 @@ async function buildPhotoUrl(photoArray, botToken, requestUrl) {
 	if (!bestPhoto || !bestPhoto.file_id) {
 		return null;
 	}
-	try {
-		const filePath = await getTelegramFilePath(bestPhoto.file_id, botToken);
-		const origin = new URL(requestUrl).origin;
-		return `${origin}/tg/file/${encodeURI(filePath)}`;
-	} catch (err) {
-		console.warn("Failed to resolve Telegram photo:", err);
-		return null;
-	}
+	return buildMediaUrl({ fileId: bestPhoto.file_id, botToken, bucket, baseUrl, label: "photo" });
 }
 
-async function buildFileUrl(file, botToken, requestUrl, label) {
+async function buildFileUrl(file, botToken, requestUrl, label, bucket, baseUrl) {
 	if (!file || !file.file_id) {
 		return null;
 	}
@@ -45,17 +147,10 @@ async function buildFileUrl(file, botToken, requestUrl, label) {
 		console.warn(`Missing telegramBotToken, skipping ${label}`);
 		return null;
 	}
-	try {
-		const filePath = await getTelegramFilePath(file.file_id, botToken);
-		const origin = new URL(requestUrl).origin;
-		return `${origin}/tg/file/${encodeURI(filePath)}`;
-	} catch (err) {
-		console.warn(`Failed to resolve Telegram ${label}:`, err);
-		return null;
-	}
+	return buildMediaUrl({ fileId: file.file_id, botToken, bucket, baseUrl, label });
 }
 
-async function buildStickerUrl(sticker, botToken, requestUrl) {
+async function buildStickerUrl(sticker, botToken, requestUrl, bucket, baseUrl) {
 	if (!sticker || !sticker.file_id) {
 		return null;
 	}
@@ -67,48 +162,46 @@ async function buildStickerUrl(sticker, botToken, requestUrl) {
 	const thumbId = sticker.thumbnail?.file_id ?? sticker.thumb?.file_id;
 	const fileId = isAnimated && thumbId ? thumbId : sticker.file_id;
 	const format = isAnimated && thumbId ? "png" : null;
-	try {
-		const filePath = await getTelegramFilePath(fileId, botToken);
-		const origin = new URL(requestUrl).origin;
-		const query = format ? `?format=${format}` : "";
-		return `${origin}/tg/file/${encodeURI(filePath)}${query}`;
-	} catch (err) {
-		console.warn("Failed to resolve Telegram sticker:", err);
-		return null;
-	}
+	return buildMediaUrl({ fileId, botToken, bucket, baseUrl, format, label: "sticker" });
 }
 
-export async function collectTelegramMediaUrls(channelPost, botToken, requestUrl) {
+export async function collectTelegramMediaUrls(channelPost, botToken, requestUrl, env) {
 	const urls = [];
-	const photoUrl = await buildPhotoUrl(channelPost.photo, botToken, requestUrl);
+	if (!env?.MEDIA_BUCKET || !env?.R2_PUBLIC_BASE_URL) {
+		console.warn("Missing MEDIA_BUCKET or R2_PUBLIC_BASE_URL, skipping media uploads");
+		return urls;
+	}
+	const baseUrl = env.R2_PUBLIC_BASE_URL;
+	const bucket = env.MEDIA_BUCKET;
+	const photoUrl = await buildPhotoUrl(channelPost.photo, botToken, requestUrl, bucket, baseUrl);
 	if (photoUrl) {
 		urls.push(photoUrl);
 	}
-	const stickerUrl = await buildStickerUrl(channelPost.sticker, botToken, requestUrl);
+	const stickerUrl = await buildStickerUrl(channelPost.sticker, botToken, requestUrl, bucket, baseUrl);
 	if (stickerUrl) {
 		urls.push(stickerUrl);
 	}
-	const videoUrl = await buildFileUrl(channelPost.video, botToken, requestUrl, "video");
+	const videoUrl = await buildFileUrl(channelPost.video, botToken, requestUrl, "video", bucket, baseUrl);
 	if (videoUrl) {
 		urls.push(videoUrl);
 	}
-	const animationUrl = await buildFileUrl(channelPost.animation, botToken, requestUrl, "animation");
+	const animationUrl = await buildFileUrl(channelPost.animation, botToken, requestUrl, "animation", bucket, baseUrl);
 	if (animationUrl) {
 		urls.push(animationUrl);
 	}
-	const documentUrl = await buildFileUrl(channelPost.document, botToken, requestUrl, "document");
+	const documentUrl = await buildFileUrl(channelPost.document, botToken, requestUrl, "document", bucket, baseUrl);
 	if (documentUrl) {
 		urls.push(documentUrl);
 	}
-	const audioUrl = await buildFileUrl(channelPost.audio, botToken, requestUrl, "audio");
+	const audioUrl = await buildFileUrl(channelPost.audio, botToken, requestUrl, "audio", bucket, baseUrl);
 	if (audioUrl) {
 		urls.push(audioUrl);
 	}
-	const voiceUrl = await buildFileUrl(channelPost.voice, botToken, requestUrl, "voice");
+	const voiceUrl = await buildFileUrl(channelPost.voice, botToken, requestUrl, "voice", bucket, baseUrl);
 	if (voiceUrl) {
 		urls.push(voiceUrl);
 	}
-	const videoNoteUrl = await buildFileUrl(channelPost.video_note, botToken, requestUrl, "video_note");
+	const videoNoteUrl = await buildFileUrl(channelPost.video_note, botToken, requestUrl, "video_note", bucket, baseUrl);
 	if (videoNoteUrl) {
 		urls.push(videoNoteUrl);
 	}
@@ -320,31 +413,3 @@ export function createTelegramMediaGroupManager({ flushDelayMs = MEDIA_GROUP_FLU
 	return { enqueueMediaGroup };
 }
 
-export async function handleTelegramFileProxy(request, env) {
-	const url = new URL(request.url);
-	if (request.method !== "GET" || !url.pathname.startsWith("/tg/file/")) {
-		return null;
-	}
-	const filePath = url.pathname.slice("/tg/file/".length);
-	if (!filePath) {
-		return new Response("Missing file path", { status: 400 });
-	}
-	if (!env.telegramBotToken) {
-		return new Response("Missing telegramBotToken", { status: 500 });
-	}
-	const tgUrl = `https://api.telegram.org/file/bot${env.telegramBotToken}/${filePath}`;
-	const format = url.searchParams.get("format");
-	let tgResp;
-	if (format === "png") {
-		tgResp = await fetch(tgUrl, { cf: { image: { format: "png" } } });
-		if (!tgResp.ok) {
-			console.warn("Image conversion failed, falling back:", tgResp.status);
-			tgResp = await fetch(tgUrl);
-		}
-	} else {
-		tgResp = await fetch(tgUrl);
-	}
-	const headers = new Headers(tgResp.headers);
-	headers.set("Cache-Control", "public, max-age=86400");
-	return new Response(tgResp.body, { status: tgResp.status, headers });
-}

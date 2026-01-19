@@ -3,4 +3,8 @@ main = "src/index.js"
 compatibility_date = "2023-02-05"
 
 [vars]
+R2_PUBLIC_BASE_URL = "https://pub-example.r2.dev"
 
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "bucker-name"

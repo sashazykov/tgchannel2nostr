@@ -41,47 +41,22 @@ afterEach(() => {
 });
 
 describe('worker fetch', () => {
-  it('rejects file proxy without bot token', async () => {
-    const ctx = createExecutionContext();
-    const resp = await worker.fetch(
-      new Request('https://example.com/tg/file/photos/file.jpg', { method: 'GET' }),
-      {},
-      ctx
-    );
-    expect(resp.status).toBe(500);
-    expect(await resp.text()).toBe('Missing telegramBotToken');
-  });
-
-  it('proxies telegram files with cache headers', async () => {
-    const fetchMock = setFetchMock(async (input) => {
-      const url = typeof input === 'string' ? input : input.url;
-      expect(url).toBe('https://api.telegram.org/file/bottoken123/photos/file.jpg');
-      return new Response('image-body', {
-        status: 200,
-        headers: { 'Content-Type': 'image/jpeg' },
-      });
-    });
-
-    const ctx = createExecutionContext();
-    const resp = await worker.fetch(
-      new Request('https://example.com/tg/file/photos/file.jpg', { method: 'GET' }),
-      { telegramBotToken: 'token123' },
-      ctx
-    );
-
-    expect(resp.status).toBe(200);
-    expect(resp.headers.get('Cache-Control')).toBe('public, max-age=86400');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 
   it('sends text and photo url to nostr', async () => {
     setFetchMock(async (input) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.startsWith('https://api.telegram.org/bot')) {
+        const fileId = new URL(url).searchParams.get('file_id');
         return new Response(
-          JSON.stringify({ ok: true, result: { file_path: 'photos/2.jpg' } }),
+          JSON.stringify({ ok: true, result: { file_path: `photos/${fileId}.jpg` } }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
+      }
+      if (url.startsWith('https://api.telegram.org/file/')) {
+        return new Response('image-body', {
+          status: 200,
+          headers: { 'Content-Type': 'image/jpeg' },
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -91,6 +66,10 @@ describe('worker fetch', () => {
       telegramBotToken: 'token123',
       publicKey: PUBLIC_KEY_HEX,
       privateKey: PRIVATE_KEY_HEX,
+      MEDIA_BUCKET: {
+        put: vi.fn(async () => undefined),
+      },
+      R2_PUBLIC_BASE_URL: 'https://bucket.r2.dev',
     };
     const payload = {
       channel_post: {
@@ -110,11 +89,9 @@ describe('worker fetch', () => {
 
     expect(await resp.text()).toBe('OK');
     await Promise.all(ctx.tasks);
-    expect(nostr.generateNip01Event).toHaveBeenCalledWith(
-      'hello\n\nhttps://example.com/tg/file/photos/2.jpg',
-      PUBLIC_KEY_HEX,
-      PRIVATE_KEY_HEX
-    );
+    const content = nostr.generateNip01Event.mock.calls[0][0];
+    expect(content).toContain('hello');
+    expect(content).toContain('https://bucket.r2.dev/');
   });
 
   it('includes forwarded info in nostr content', async () => {
@@ -123,6 +100,10 @@ describe('worker fetch', () => {
       telegramBotToken: 'token123',
       publicKey: PUBLIC_KEY_HEX,
       privateKey: PRIVATE_KEY_HEX,
+      MEDIA_BUCKET: {
+        put: vi.fn(async () => undefined),
+      },
+      R2_PUBLIC_BASE_URL: 'https://bucket.r2.dev',
     };
     const payload = {
       channel_post: {
@@ -166,6 +147,12 @@ describe('worker fetch', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      if (url.startsWith('https://api.telegram.org/file/')) {
+        return new Response('image-body', {
+          status: 200,
+          headers: { 'Content-Type': 'image/jpeg' },
+        });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
 
@@ -174,6 +161,10 @@ describe('worker fetch', () => {
       telegramBotToken: 'token123',
       publicKey: PUBLIC_KEY_HEX,
       privateKey: PRIVATE_KEY_HEX,
+      MEDIA_BUCKET: {
+        put: vi.fn(async () => undefined),
+      },
+      R2_PUBLIC_BASE_URL: 'https://bucket.r2.dev',
     };
 
     await worker.fetch(
@@ -213,7 +204,6 @@ describe('worker fetch', () => {
     expect(nostr.generateNip01Event).toHaveBeenCalledTimes(1);
     const content = nostr.generateNip01Event.mock.calls[0][0];
     expect(content).toContain('first');
-    expect(content).toContain('https://example.com/tg/file/photos/1.jpg');
-    expect(content).toContain('https://example.com/tg/file/photos/2.jpg');
+    expect(content).toContain('https://bucket.r2.dev/');
   });
 });
