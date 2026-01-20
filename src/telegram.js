@@ -314,6 +314,118 @@ export function buildTelegramForwardContent(channelPost) {
 	return `Forwarded from ${label}${linkText}`;
 }
 
+function formatLinkReference(index, url) {
+	return `[${index}]: ${url}`;
+}
+
+function appendLinkReferences(text, references) {
+	if (!Array.isArray(references) || references.length === 0) {
+		return text;
+	}
+	const trimmedText = typeof text === "string" ? text.trimEnd() : "";
+	const lines = references.map((url, index) => formatLinkReference(index + 1, url));
+	const referencesBlock = lines.join("\n");
+	if (!trimmedText) {
+		return referencesBlock;
+	}
+	return `${trimmedText}\n\n${referencesBlock}`;
+}
+
+function collectLinkEntities(channelPost) {
+	if (!channelPost) {
+		return [];
+	}
+	const entities = channelPost.entities ?? channelPost.caption_entities;
+	return Array.isArray(entities) ? entities : [];
+}
+
+function extractEntityUrl(text, entity) {
+	if (!text || !entity || entity.type !== "url") {
+		return null;
+	}
+	const start = entity.offset ?? 0;
+	const length = entity.length ?? 0;
+	if (length <= 0) {
+		return null;
+	}
+	return text.slice(start, start + length);
+}
+
+function collectLinkPreviewUrl(channelPost) {
+	const linkPreview = channelPost?.link_preview_options;
+	return linkPreview?.url ?? null;
+}
+
+export function buildTelegramLinkReferences(channelPost) {
+	const originalText = channelPost?.text ?? channelPost?.caption ?? "";
+	const entities = collectLinkEntities(channelPost);
+	const references = [];
+	const referenceIndexByUrl = new Map();
+
+	const addReference = (url) => {
+		if (!url || referenceIndexByUrl.has(url)) {
+			return;
+		}
+		references.push(url);
+		referenceIndexByUrl.set(url, references.length);
+	};
+
+	for (const entity of entities) {
+		if (entity?.type === "text_link" && entity.url) {
+			addReference(entity.url);
+		}
+		if (entity?.type === "url") {
+			const extracted = extractEntityUrl(originalText, entity);
+			addReference(extracted);
+		}
+	}
+
+	const previewUrl = collectLinkPreviewUrl(channelPost);
+	addReference(previewUrl);
+
+	if (!originalText || references.length === 0 || entities.length === 0) {
+		return {
+			text: appendLinkReferences(originalText, references),
+			references,
+		};
+	}
+
+	const edits = [];
+	for (const entity of entities) {
+		if (entity?.type === "url") {
+			const url = extractEntityUrl(originalText, entity);
+			const index = url ? referenceIndexByUrl.get(url) : null;
+			if (index) {
+				edits.push({ start: entity.offset, end: entity.offset + entity.length, replacement: `[${index}]` });
+			}
+		}
+		if (entity?.type === "text_link") {
+			const index = referenceIndexByUrl.get(entity.url);
+			if (index) {
+				edits.push({ start: entity.offset + entity.length, end: entity.offset + entity.length, replacement: ` [${index}]` });
+			}
+		}
+	}
+
+	if (edits.length === 0) {
+		return {
+			text: appendLinkReferences(originalText, references),
+			references,
+		};
+	}
+
+	const sortedEdits = edits.sort((a, b) => b.start - a.start);
+	let updatedText = originalText;
+	for (const edit of sortedEdits) {
+		updatedText = `${updatedText.slice(0, edit.start)}${edit.replacement}${updatedText.slice(edit.end)}`;
+	}
+
+	return {
+		text: appendLinkReferences(updatedText, references),
+		references,
+	};
+}
+
 export function buildTelegramPollContent(channelPost) {
 	const poll = channelPost?.poll;
 	if (!poll) {

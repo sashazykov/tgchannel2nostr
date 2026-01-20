@@ -5,6 +5,7 @@ import {
 	collectTelegramMediaUrls,
 	createTelegramMediaGroupManager,
 	buildTelegramForwardContent,
+	buildTelegramLinkReferences,
 } from './telegram';
 
 const telegramMediaGroups = createTelegramMediaGroupManager();
@@ -31,13 +32,14 @@ export default {
 
 		const data = await request.json();
 		// log the received update
-		console.log("Received update:", data);
+		console.log("Received update:", JSON.stringify(data, null, 2));
 		if (data["channel_post"] === undefined) {
 			return new Response("No channel_post found");
 		}
 
 		const channelPostData = data["channel_post"];
-		const channelPost = channelPostData["text"] ?? channelPostData["caption"] ?? "";
+		const linkReferences = buildTelegramLinkReferences(channelPostData);
+		const channelPost = linkReferences.text ?? channelPostData["text"] ?? channelPostData["caption"] ?? "";
 		const forwardContent = buildTelegramForwardContent(channelPostData);
 		const mediaUrls = await collectTelegramMediaUrls(channelPostData, env.telegramBotToken, request.url, env);
 		const stickerEmoji = channelPostData["sticker"]?.emoji ?? "";
